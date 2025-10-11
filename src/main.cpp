@@ -49,17 +49,17 @@ uint8_t readLoRaVersionSPI()
 // --- Inicializar LoRa ---
 bool iniciar_Lora()
 {
-  // Serial.println("Inicializando LoRa...");
-
+  // Inicializa SPI y pines LoRa
   SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_CS);
   LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
 
+  // Intenta iniciar LoRa en la frecuencia especificada
   if (!LoRa.begin(LORA_FREQ))
   {
-    // Serial.println("Error al iniciar LoRa");
     return false;
   }
 
+  // Verifica versión del chip LoRa
   uint8_t version = readLoRaVersionSPI();
   if (version != 0x12 && version != 0x13)
   {
@@ -68,31 +68,26 @@ bool iniciar_Lora()
     return false;
   }
 
-  // Serial.println("LoRa detectado y configurado correctamente");
+  // Configura interrupción en DIO0
   pinMode(LORA_DIO0, INPUT);
   attachInterrupt(digitalPinToInterrupt(LORA_DIO0), onLoraDio0, RISING);
-  LoRa.setSpreadingFactor(7);
-  LoRa.setSignalBandwidth(125E3);
-  LoRa.setCodingRate4(5);
-  LoRa.setSyncWord(0x12);
 
+  // Configuración de parámetros LoRa
+  LoRa.setSpreadingFactor(7);     // SF: Factor de propagación
+  LoRa.setSignalBandwidth(125E3); // BW: Ancho de banda
+  LoRa.setCodingRate4(5);         // CR: Tasa de corrección de errores
+  LoRa.setSyncWord(0x12);         // Palabra de sincronización (debe coincidir con transmisor)
+  LoRa.enableCrc();               // Habilita verificación CRC
+
+  Serial.println("LoRa iniciado correctamente");
   return true;
 }
 
 // --- Reintento de conexión ---
 void reconnectLora()
 {
-  Serial.println("Intentando reconectar LoRa...");
   lora_Conectado = false;
   digitalWrite(LED_VERDE, LOW);
-  delay(100);
-  // for (int i = 0; i < 3; i++)
-  // {
-  //   digitalWrite(LED_AMARILLO, HIGH);
-  //   delay(100);
-  //   digitalWrite(LED_AMARILLO, LOW);
-  //   delay(100);
-  // }
   LoRa.end();
   delay(100);
 
@@ -102,15 +97,13 @@ void reconnectLora()
     {
       lora_Conectado = true;
       digitalWrite(LED_VERDE, HIGH);
-      // Serial.println("Reconectado correctamente");
     }
     else
     {
-      // Serial.println("Fallo al reconectar, reintentando...");
       digitalWrite(LED_ROJO, HIGH);
-      delay(80);
+      delay(100);
       digitalWrite(LED_ROJO, LOW);
-      delay(80);
+      delay(200);
     }
   }
 }
@@ -123,19 +116,19 @@ void heartbeatSequence()
   {
   case 0:
     digitalWrite(LED_VERDE, HIGH);
-    tickerVerde.once_ms(55, heartbeatSequence); // ON 50 ms
+    tickerVerde.once_ms(55, heartbeatSequence);
     break;
   case 1:
     digitalWrite(LED_VERDE, LOW);
-    tickerVerde.once_ms(100, heartbeatSequence); // OFF 80 ms
+    tickerVerde.once_ms(100, heartbeatSequence);
     break;
   case 2:
     digitalWrite(LED_VERDE, HIGH);
-    tickerVerde.once_ms(55, heartbeatSequence); // ON 50 ms
+    tickerVerde.once_ms(55, heartbeatSequence);
     break;
   case 3:
     digitalWrite(LED_VERDE, LOW);
-    tickerVerde.once_ms(2500, heartbeatSequence); // OFF 3 s
+    tickerVerde.once_ms(2500, heartbeatSequence);
     break;
   }
   step = (step + 1) % 4;
@@ -144,8 +137,8 @@ void heartbeatSequence()
 void setup()
 {
   Serial.begin(115200);
-  delay(1000);
-  // Serial.println("Iniciando receptor LoRa ESP32-C3");
+  delay(500);
+  Serial.println("Iniciando receptor LoRa ESP32-C3...");
 
   pinMode(LED_ROJO, OUTPUT);
   pinMode(LED_AMARILLO, OUTPUT);
@@ -153,73 +146,54 @@ void setup()
   digitalWrite(LED_ROJO, LOW);
   digitalWrite(LED_AMARILLO, LOW);
   digitalWrite(LED_VERDE, LOW);
-
   lora_Conectado = iniciar_Lora();
-
-  if (lora_Conectado)
-  {
-    digitalWrite(LED_VERDE, HIGH);
-    // Serial.println("Esperando mensajes LoRa...");
-  }
-  else
-  {
-    // Serial.println("No se detectó módulo LoRa al inicio");
-  }
-
   tickerVerde.once_ms(100, heartbeatSequence);
   Ultimo_Check_Lora = millis();
 }
 
 void loop()
 {
-  // Revisión periódica del estado del módulo LoRa
+  // Verificación periódica del módulo
   if (millis() - Ultimo_Check_Lora >= LORA_CHECK_INTERVAL)
   {
     Ultimo_Check_Lora = millis();
     uint8_t version = readLoRaVersionSPI();
     if (version != 0x12 && version != 0x13)
     {
-      if (lora_Conectado)
-      {
-        reconnectLora();
-      }
-    }
-    else if (!lora_Conectado)
-    {
       reconnectLora();
     }
   }
   if (!lora_Conectado)
-    return;
-  // --- Solo procesamos el mensaje si la interrupción indicó que llegó ---
-  if (Lora_Mensaje_Recibido)
   {
-    Lora_Mensaje_Recibido = false; // Reseteamos la bandera
-    int packetSize = LoRa.parsePacket();
-    if (packetSize)
+    return;
+  }
+
+  // --- Procesar mensajes recibidos ---
+  int packetSize = LoRa.parsePacket();
+  if (packetSize > 0)
+  {
+    String msg;
+    while (LoRa.available())
     {
-      String msg;
-      while (LoRa.available())
-        msg += (char)LoRa.read();
-      int rssi = LoRa.packetRssi();
-      Serial.printf("Mensaje: %s | RSSI: %d\n", msg.c_str(), rssi);
-      msg.trim();
-      msg.toLowerCase();
-      if (msg == "read")
-      {
-        Serial.println("Comando 'read' → LED rojo");
-        digitalWrite(LED_ROJO, HIGH);
-        delay(2000);
-        digitalWrite(LED_ROJO, LOW);
-      }
-      else
-      {
-        Serial.println("Comando no reconocido");
-        digitalWrite(LED_AMARILLO, HIGH);
-        delay(300);
-        digitalWrite(LED_AMARILLO, LOW);
-      }
+      msg += (char)LoRa.read();
+    }
+    int rssi = LoRa.packetRssi();
+    msg.trim();
+    msg.toLowerCase();
+
+    if (msg == "@")
+    {
+      digitalWrite(LED_ROJO, HIGH);
+      delay(2000);
+      digitalWrite(LED_ROJO, LOW);
+    }
+    else if (msg == "read")
+    {
+      digitalWrite(LED_AMARILLO, HIGH);
+      delay(2000);
+      digitalWrite(LED_AMARILLO, LOW);
     }
   }
+
   delay(10);
 }
